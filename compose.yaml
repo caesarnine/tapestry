@@ -28,7 +28,7 @@ services:
       - POSTGRES_USER=tapestry_user
       - POSTGRES_PASSWORD=tapestry_password
     volumes:
-      - main:/var/lib/postgresql/data
+      - tapestry:/var/lib/postgresql/data
 
 volumes:
-  main:
+  tapestry:
