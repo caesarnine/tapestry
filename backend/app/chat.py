@@ -51,7 +51,7 @@ else:
 
 if anthropic_api_key:
     anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
-    anthropic_model = "claude-3-5-sonnet-20240620"
+    anthropic_model = "claude-3-5-sonnet-latest"
 
 else:
     anthropic_client = AsyncAnthropicBedrock()
@@ -266,7 +266,7 @@ async def analyze_single_document(document: Dict, user_question: str, conversati
         [relevance score between 1 and 10, 1 is not relevant, 10 is completely relevant]
         </relevance_score>
         <context>
-        [short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk]
+        [short succinct context to situate this chunk within the overall document]
         </context>
         </citation>
         ...
@@ -338,6 +338,8 @@ def extract_citations_from_response(response: str, document: Dict) -> list[dict]
         for citation in root.findall('.//citation'):
             text = citation.find('text').text if citation.find('text') is not None else ''
             explanation = citation.find('explanation').text if citation.find('explanation') is not None else ''
+            context = citation.find('context').text if citation.find('context') is not None else ''
+            relevance_score = citation.find('relevance_score').text if citation.find('relevance_score') is not None else ''
             citation_dict = {
                 "id": hashlib.sha256(f"{document_id}-{text}".encode()).hexdigest()[:5],
                 "text": text,
@@ -345,7 +347,9 @@ def extract_citations_from_response(response: str, document: Dict) -> list[dict]
                 "document_id": document_id,
                 "document_date": document_date,
                 "document_tags": document_tags,
-                "document_filename": document_filename
+                "document_filename": document_filename,
+                "context": context,
+                "relevance_score": relevance_score
             }
             # Skip empty citations
             if not text:
@@ -381,6 +385,8 @@ def format_citations_output(citations: list[dict]) -> str:
             output += f"<id>{citation['id']}</id>\n"
             output += f"<text>{citation['text']}</text>\n"
             output += f"<explanation>{citation['explanation']}</explanation>\n"
+            output += f"<context>{citation['context']}</context>\n"
+            output += f"<relevance_score>{citation['relevance_score']}</relevance_score>\n"
             output += "</citation>\n"
         output += "</citations>\n"
         output += "</document_result>\n"
@@ -551,11 +557,12 @@ async def process_message(message: str, context: Dict[str, Any], db: Session, co
     selected_documents = context.get('selectedDocuments', [])
 
     instruction_facts = """
-- Compress key factual information from the citations, as well as useful background information which may not be in the citations, into a list of core factual points to reference.
+- Extract key factual information from the citations, as well as useful background information which may not be in the citations, into a list of core factual points to reference.
     - For this step do not draw any conclusions, perform any analysis, or make any judgements.
     - Place this section of your response under the #### Facts heading.
     - Use inline <citation> tags to cite your sources and include all relevant citations.
     - Remember there can be multiple citations to back a claim.
+    - Organize the facts in a logical and coherent manner.
     - Use markdown formatting.
     """.strip()
 
@@ -576,7 +583,6 @@ async def process_message(message: str, context: Dict[str, Any], db: Session, co
     - For mathematical problems, show all work explicitly using LaTeX for formal notation and provide detailed proofs.
     - Explore multiple solutions individually if possible, comparing approaches in your reflections.
     - Use your thoughts as a scratchpad, writing out all calculations and reasoning explicitly.
-    - Be aware of your limitations as an AI and what you can and cannot do.
     - After every 3 steps, perform a detailed self-reflection on your reasoning so far, considering potential biases and alternative viewpoints.
     """.strip()
 
@@ -586,26 +592,23 @@ async def process_message(message: str, context: Dict[str, Any], db: Session, co
     - Use inline <citation> tags to cite your sources.
     - Include all relevant citations for any claims made, it's ok to have multiple citations for a single claim.
     - Use markdown formatting for your answer.
-    - Be unbiased and objective. The goal is to provide the best answer possible, not to paint a particular company in a positive or negative light.
+    - Be unbiased and objective. The goal is to provide the best answer possible.
     """.strip()
 
     example_output_if_reasoning_mode = """
 #### Facts
-[list of facts]
-- [fact 1] <citation id="[citation_id]" />
-- [fact 2] <citation id="[citation_id]" />
 ...
 
 #### Thinking Step 1 - [title of step]
-[thoughts and reasoning for step]
+[detailed reasoning following the guiding principles]
 
 #### Thinking Step 2 - [title of step]
-[thoughts and reasoning for step]
+[detailed reasoning following the guiding principles]
 
 ...
 
 #### Thinking Step n - [title of step]
-[thoughts and reasoning for step]
+[detailed reasoning following the guiding principles]
 
 #### Answer
 [final answer with citations, formatted with markdown]
@@ -613,9 +616,6 @@ async def process_message(message: str, context: Dict[str, Any], db: Session, co
 
     example_output_if_not_reasoning_mode = """
 #### Facts
-[list of facts]
-- [fact 1] <citation id="[citation_id]" />
-- [fact 2] <citation id="[citation_id]" />
 ...
 
 #### Answer
@@ -632,6 +632,7 @@ async def process_message(message: str, context: Dict[str, Any], db: Session, co
     system_prompt = f"""
 You are an expert research AI assistant.
 You are embedded in a research tool that allows users to upload and query documents, with a left sidebar that allows the user to select the documents to query or filter the documents.
+The goal is to thoroughly and objectively analyze the documents and provide the best answer possible. Prefer to be thorough over concise.
 
 <citation_instructions>
 - Include inline citations in the <citation id="id" /> format.
